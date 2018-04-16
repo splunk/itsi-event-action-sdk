@@ -14,34 +14,12 @@ import json
 import time
 from copy import deepcopy
 
-from splunk.clilib.bundle_paths import make_splunkhome_path
+from eventing_base import Client, setup_logger
 
-from splunk import ResourceNotFound, RESTException
+default_logger = setup_logger()
 
-sys.path.append(make_splunkhome_path(['etc', 'apps', 'SA-ITOA', 'lib', 'ITOA']))
-from ITOA.event_management.notable_event_tag import NotableEventTag
-from ITOA.event_management.notable_event_comment import NotableEventComment
-from ITOA.itoa_common import extract
-from ITOA.event_management.notable_event_ticketing import ExternalTicket
 
-sys.path.append(make_splunkhome_path(['etc', 'apps', 'SA-ITOA', 'lib', 'itsi', 'event_management']))
-from itsi_notable_event import ItsiNotableEvent
-from itsi_notable_event_group import ItsiNotableEventGroup
-
-from eventing_base import EventBase
-from ITOA.event_management.notable_event_utils import NotableEventConfiguration
-
-########
-## Setup a default Logger
-########
-from ITOA.setup_logging import setup_logging
-default_logger = setup_logging('itsi_event_management.log', 'itsi.object.notable_event')
-
-########
-## APIs
-########
-
-class EventMeta(EventBase):
+class EventMeta(Client):
     """
     Import this class to get information about ITSI Events.
     - What are all the available status values I can set on an Event?
@@ -49,32 +27,42 @@ class EventMeta(EventBase):
     - What are all the available severities I can set on an Event?
 
     Usage:
-    >>> meta = EventMeta(session_key) # or
-    >>> meta = EventMeta(None, username, password)
+    >>> meta = EventMeta(username, password, base_url)
 
     Provide your own logger if you want to, else we'll default to default_logger
     """
-    def __init__(self, session_key, username=None, password=None,
-            logger=default_logger):
-        """
-        @type session_key: string
-        @param session_key: session key given by Splunkd when you log in
-            If you dont have one, pass in None. But you will have to provide
-            credentials
+    def __init__(self, username, password, base_url, logger=default_logger, session=None,
+                 silent=False, delay=0.0):
 
+        """
         @type username: string
-        @param username: your username
+        @param username: Splunk username
 
         @type password: string
-        @param password: your password
+        @param password: splunk password
+        
+        @type base_url: string
+        @param base_url: splunkd URL
 
         @type logger: object of type logger
         @param logger: if you have an existing logger, pass it in, we'll log
-            stuff there...else check ITSI logs
+            stuff there...else check we'll use our own
+
+        @type session: <class 'requests.sessions.Session'> object
+        @param session: (optional) In case there's already a session
+        
+        @type silent: boolean
+        @param silent: (optional) When ``True`, any exception resulted
+            from HTTP status codes or parsing will be ignored.
+
+        @type delay: float
+        @param delay: (option) Ensures a minimum delay of seconds between
+            requests.
         """
-        super(EventMeta, self).__init__(session_key, username, password, logger)
-        self.event_meta = NotableEventConfiguration(self.session_key,
-                self.logger)
+        super(EventMeta, self).__init__(username, password, base_url, logger, session,
+                 silent, delay)
+        self.all_info = self.request('GET',
+                'event_management_interface/notable_event_configuration/all_info')
 
     def get_all_statuses(self):
         """
@@ -85,7 +73,7 @@ class EventMeta(EventBase):
         @return: list of all possible configured statuses
         #
         """
-        return self.event_meta.get_statuses()
+        return self.all_info.get('statuses', [])
 
     def get_all_severities(self):
         """
@@ -95,7 +83,7 @@ class EventMeta(EventBase):
         @rtype: list
         @return: list of all possible configured severities
         """
-        return self.event_meta.get_severities()
+        return self.all_info.get('severities', [])
 
     def get_all_owners(self):
         """
@@ -105,32 +93,92 @@ class EventMeta(EventBase):
         @rtype: list
         @return: list of all possible configured owners
         """
-        return self.event_meta.get_owners()
+        return self.all_info.get('owners', [])
 
-class Event(EventBase):
+class Event(Client):
     """
     Import this class to operate on ITSI Events.
     """
-    def __init__(self, session_key, username=None, password=None,
-            logger=default_logger):
-        """
-        @type session_key: string
-        @param session_key: session key given by Splunkd when you log in
-            If you dont have one, pass in None. But you will have to provide
-            credentials
+    def __init__(self, username, password, base_url, logger=default_logger, session=None,
+                 silent=False, delay=0.0):
 
+        """
         @type username: string
-        @param username: your username
+        @param username: Splunk username
 
         @type password: string
-        @param password: your password
+        @param password: splunk password
+        
+        @type base_url: string
+        @param base_url: splunkd URL
 
         @type logger: object of type logger
         @param logger: if you have an existing logger, pass it in, we'll log
-            stuff there...else check ITSI logs
+            stuff there...else check we'll use our own
+
+        @type session: <class 'requests.sessions.Session'> object
+        @param session: (optional) In case there's already a session
+        
+        @type silent: boolean
+        @param silent: (optional) When ``True`, any exception resulted
+            from HTTP status codes or parsing will be ignored.
+
+        @type delay: float
+        @param delay: (option) Ensures a minimum delay of seconds between
+            requests.
         """
-        super(Event, self).__init__(session_key, username, password, logger)
-        self.event = ItsiNotableEvent(self.session_key, logger=self.logger)
+        super(Event, self).__init__(username, password, base_url, logger, session,
+                                    silent, delay)
+
+    def _get_object(self, object_):
+        """
+        given an object, try to get a dict/list type
+        merely a wrapper to json.loads(). doesnt crap out and returns None if
+        invalid.
+        @param object_: input object, any type
+        @return dict/list if valid, None if otherwise
+        """
+        rval = None
+        if isinstance(object_, basestring):
+            try:
+                rval = json.loads(object_)
+            except Exception:
+                pass
+        elif isinstance(object_, dict):
+            rval = object_
+        elif isinstance(object_, list):
+            rval = object_
+            
+        return rval
+
+    def _extract(self, objects, key):
+        """
+        given a list of objects, extract requested values given key, dedup
+        and return a list
+        @type objects: dict/list
+        @param objects: objects to iterate over and extract id from
+        @type key: basestring
+        @param key: `key` that corresponds to the id
+        @return a list of object ids
+        @raises Exception
+        """
+        ids_ = []
+
+        # always work with list
+        objects = self._get_object(objects)
+        if not objects:
+            return ids_
+
+        if isinstance(objects, dict):
+            objects = [objects]
+        if not isinstance(objects, list):
+            raise Exception('Expecting `objects` to be list/dict type and not `%s`'
+                    % type(objects).__name__)
+        for i in objects:
+            if i.get(key):
+                ids_.append(i[key])
+                
+        return list(set(ids_))
 
     def _get_from_index(self, event_ids, split_by="," , **kwargs):
         """
@@ -173,22 +221,22 @@ class Event(EventBase):
         objects = None
 
         # indexing takes time and just because we have an event_id does not
-        # really means that event has been indexed. we shall therefore
-        # retry..yes, 10 times.
+        # really means that event has been indexed
         retries = 10
         while retries:
             time.sleep(5)
             try:
-                objects = self.event.get_bulk(event_ids)
+                params = {'ids':json.dumps(event_ids)}
+                params.update(kwargs)
+                objects = self.request('GET', 'event_management_interface/notable_event',
+                        params=params)
                 if objects:
                     break
                 retries -= 1
-            except ResourceNotFound:
-                self.logger.exception('Unable to find event_id: %s', event_ids)
-                break
             except Exception:
                 self.logger.exception('Internal Error.')
                 break
+            
         return objects
 
     def get_severity(self, events=None, event_ids=None, split_by=",", **kwargs):
@@ -233,21 +281,19 @@ class Event(EventBase):
             raise TypeError(('Invalid type for `events`. Expecting list.'
                 ' Received type: {}').format(type(events).__name__))
 
-        # normalization complete....
         if events:
-            # get event_ids from these events...
-            event_ids = extract(events, 'event_id')
+            event_ids = self._extract(events, 'event_id')
         else:
             # we have event_ids, lets fetch events from index
             if isinstance(event_ids, basestring):
                 event_ids = event_ids.split(split_by)
             if not isinstance(event_ids, list):
                 return None
-            events = self._get_from_index(event_ids, kwargs)
+            events = self._get_from_index(event_ids, **kwargs)
             if not events:
                 return None
-
-        severities = extract(events, 'severity')
+        severities = self._extract(events, 'severity')
+        
         return zip(event_ids, severities)
 
     def get_status(self, events=None, event_ids=None, split_by=",", **kwargs):
@@ -291,23 +337,22 @@ class Event(EventBase):
             events = [events]
         if events and not isinstance(events, list):
             raise TypeError(('Invalid type for `events`. Expecting list.'
-                ' Received type: {}').format(type(events).__name__))
+                    ' Received type: {}').format(type(events).__name__))
 
-        # normalization complete....
         if events:
-            # get event_ids from these events...
-            event_ids = extract(events, 'event_id')
+            event_ids = self._extract(events, 'event_id')
         else:
-            # we have event_ids, lets fetch events from index
+            # We have event_ids, lets fetch events from index
             if isinstance(event_ids, basestring):
                 event_ids = event_ids.split(split_by)
             if not isinstance(event_ids, list):
                 return None
-            events = self._get_from_index(event_ids, kwargs)
+            events = self._get_from_index(event_ids, **kwargs)
             if not events:
                 return None
 
-        statuses = extract(events, 'status')
+        statuses = self._extract(events, 'status')
+        
         return zip(event_ids, statuses)
 
     def get_owner(self, events=None, event_ids=None, split_by=",", **kwargs):
@@ -346,29 +391,30 @@ class Event(EventBase):
         # validate + normalize
         if not events and not event_ids:
             raise ValueError(('Expecting either `events` or `event_ids`. Both'
-                ' are None.'))
+                    ' are None.'))
         if events and isinstance(events, dict):
             events = [events]
         if events and not isinstance(events, list):
             raise TypeError(('Invalid type for `events`. Expecting list.'
-                ' Received type: {}').format(type(events).__name__))
+                    ' Received type: {}').format(type(events).__name__))
 
         # normalization complete....
         if events:
             # get event_ids from these events...
-            event_ids = extract(events, 'event_id')
+            event_ids = self._extract(events, 'event_id')
         else:
             # we have event_ids, lets fetch events from index
             if isinstance(event_ids, basestring):
                 event_ids = event_ids.split(split_by)
             if not isinstance(event_ids, list):
                 return None
-            events = self._get_from_index(event_ids, kwargs)
+            events = self._get_from_index(event_ids, **kwargs)
             if not events:
                 return None
 
         # extract owners now that we have events...
-        owners = extract(events, 'owner')
+        owners = self._extract(events, 'owner')
+        
         return zip(event_ids, owners)
 
     def update(self, blob, split_by=',', **kwargs):
@@ -408,8 +454,8 @@ class Event(EventBase):
             'now' implies current time
             no other values are supported
 
-        @rtype: dict
-        @return: dictionary of event_id schemas, in the order of input...
+        @rtype: list
+        @return: list of updated events
         """
         if isinstance(blob, dict):
             blob = [blob]
@@ -425,7 +471,7 @@ class Event(EventBase):
             # validate/sanitize...
             if not isinstance(group, dict):
                 raise TypeError(('Expecting a dict. Received: '
-                    '`%s`. Type: `%s`')%(group, type(group).__name__))
+                        '`%s`. Type: `%s`')%(group, type(group).__name__))
             if 'event_ids' not in group:
                 raise KeyError('Expecting `event_ids` in your input.')
             keys = group.pop('event_ids')
@@ -434,7 +480,7 @@ class Event(EventBase):
             supported_keys = ('owner', 'severity', 'status', 'event_ids')
             for k in group.keys():
                 if k not in supported_keys:
-                    self.logger.debug('Getting rid of `%s`: `%s`. Unsupported.'%(k, group[k]))
+                    self.logger.info('Getting rid of `%s`: `%s`. Unsupported.'%(k, group[k]))
                     group.pop(k)
 
             if isinstance(keys, basestring):
@@ -444,10 +490,12 @@ class Event(EventBase):
                 event_data = deepcopy(group)
                 event_data['event_id'] = i
                 data.append(event_data)
-            self.logger.debug('Updating keys: `%s` with: %s. kwargs: %s',
-                keys, data, kwargs)
-            objects = self.event.update_bulk(keys, data, kwargs)
+            self.logger.info('Updating keys: `%s` with: %s. kwargs: %s',
+                    keys, data, kwargs)
+            objects = self.request('PUT', 'event_management_interface/notable_event',
+                    params=kwargs, data=data)
             rval.extend(objects)
+            
         return rval
 
     def update_severity(self, event_ids, severity, split_by=',', **kwargs):
@@ -479,20 +527,21 @@ class Event(EventBase):
             event_ids = event_ids.split(split_by)
         if not isinstance(event_ids, list):
             raise TypeError(('Expecting `event_ids` to be of type basestring/'
-                'list. Received: {}. Type: {}').format(event_ids,
+                    'list. Received: {}. Type: {}').format(event_ids,
                     type(event_ids).__name__))
         if not event_ids or not severity.strip():
             raise ValueError(('Expecting non-empty list of `event_ids`. and valid'
                     ' severity string'))
 
-        # prepare data
         data = []
         for i in event_ids:
             data.append({'severity':severity, 'event_id': i})
 
-        self.logger.debug('Updating keys: `%s` with: %s. kwargs: %s',
-            event_ids, data, kwargs)
-        objects = self.event.update_bulk(event_ids, data, kwargs)
+        self.logger.info('Updating keys: `%s` with: %s. kwargs: %s',
+                event_ids, data, kwargs)
+        objects = self.request('PUT', 'event_management_interface/notable_event', 
+                params=kwargs, data=data)
+        
         return objects
 
     def update_status(self, event_ids, status, split_by=',', **kwargs):
@@ -524,20 +573,21 @@ class Event(EventBase):
             event_ids = event_ids.split(split_by)
         if not isinstance(event_ids, list):
             raise TypeError(('Expecting `event_ids` to be of type basestring/'
-                'list. Received: {}. Type: {}').format(event_ids,
+                    'list. Received: {}. Type: {}').format(event_ids,
                     type(event_ids).__name__))
         if not event_ids or not status.strip():
             raise ValueError(('Expecting non-empty list of `event_ids`. and valid'
                     ' status string'))
 
-        # prepare data
         data = []
         for i in event_ids:
             data.append({'status': status, 'event_id': i})
 
-        self.logger.debug('Updating keys: `%s` with: %s. kwargs: %s',
-            event_ids, data, kwargs)
-        objects = self.event.update_bulk(event_ids, data, kwargs)
+        self.logger.info('Updating keys: `%s` with: %s. kwargs: %s',
+                event_ids, data, kwargs)
+        objects = self.request('PUT', 'event_management_interface/notable_event', 
+                params=kwargs, data=data)
+        
         return objects
 
     def update_owner(self, event_ids, owner, split_by=',', **kwargs):
@@ -568,22 +618,22 @@ class Event(EventBase):
             event_ids = event_ids.split(split_by)
         if not isinstance(event_ids, list):
             raise TypeError(('Expecting `event_ids` to be of type basestring/'
-                'list. Received: %s. Type: %s')%(event_ids, type(event_ids).__name__))
+                    'list. Received: %s. Type: %s')%(event_ids, type(event_ids).__name__))
         if not event_ids or not owner.strip():
             raise ValueError(('Expecting non-empty list of `event_ids`. and valid'
                     ' owner string'))
-
-        # prepare data
         data = []
         for i in event_ids:
             data.append({'owner': owner, 'event_id': i})
 
-        self.logger.debug('Updating keys: `%s` with: %s. kwargs: %s',
-            event_ids, data, kwargs)
-        objects = self.event.update_bulk(event_ids, data, kwargs)
+        self.logger.info('Updating keys: `%s` with: %s. kwargs: %s',
+                event_ids, data, kwargs)
+        objects = self.request('PUT', 'event_management_interface/notable_event', 
+                params=kwargs, data=data)
+        
         return objects
 
-    def create_tag(self, event_id, tag_value, raise_exceptions=False):
+    def create_tag(self, event_id, tag_value):
         """
         create a tag for given event_id
 
@@ -598,33 +648,25 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
+                    ' basestring. Received: %s')%event_id)
         if not isinstance(tag_value, basestring):
             raise TypeError(('Expecting `tag_value` to be non-empty'
-                ' basestring. Received: %s')%tag_value)
-
-        obj = NotableEventTag(self.session_key)
+                    ' basestring. Received: %s')%tag_value)
         data = {'event_id': event_id, 'tag_name': tag_value}
 
-        try:
-            tag_id = obj.create(data)
-        except RESTException, e:
-            if e.statusCode == 409 and not raise_exceptions:
-                return None
-            else:
-                raise
+        objects = self.request('POST', 'event_management_interface/notable_event_tag',
+                data=data)
 
         if any([
-            not isinstance(tag_id, dict),
-            isinstance(tag_id, dict) and '_key' not in tag_id
-            ]):
-            self.logger.error('Unable to create requested tag for event_id: `%s`. tag_value: `%s`',
-                    event_id, tag_value)
+            not isinstance(objects, dict),
+            isinstance(objects, dict) and '_key' not in objects]):
+            self.logger.error('Unable to create requested tag for event_id: `%s`.\
+                    tag_value: `%s`',event_id, tag_value)
             return None
 
         return {
             'event_id':event_id,
-            'tag_id': tag_id['_key'],
+            'tag_id': objects['_key'],
             'tag_name': tag_value
             }
 
@@ -653,15 +695,15 @@ class Event(EventBase):
         if not isinstance(tag_id, basestring):
             raise TypeError(('Expecting `tag_id` to be non-empty'
                 ' basestring. Received: %s')%tag_id)
-
-        obj = NotableEventTag(self.session_key)
         data = {
             'event_id': event_id,
             '_key': tag_id,
             'tag_name': tag_value
             }
-        rval = obj.update(tag_id, data, is_partial_update=True)
-        return rval
+        objects = self.request('PUT', 'event_management_interface/notable_event_tag',
+                data=data)
+        
+        return objects
 
     def get_all_tags(self, event_id):
         """
@@ -675,10 +717,10 @@ class Event(EventBase):
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
                 ' basestring. Received: %s')%event_id)
-
-        obj = NotableEventTag(self.session_key)
-        rval = obj.get(event_id, is_event_id=True)
-        tags = extract(rval, 'tag_name')
+        extension = 'event_management_interface/notable_event_tag/{}'.format(str(event_id))
+        objects = self.request('GET', extension, params={'is_event_id': True})
+        tags = self._extract(objects, 'tag_name')
+        
         return tags
 
     def get_tag(self, tag_id):
@@ -692,12 +734,16 @@ class Event(EventBase):
         """
         if not isinstance(tag_id, basestring):
             raise TypeError(('Expecting `tag_id` to be non-empty'
-                ' basestring. Received: %s')%tag_id)
-        obj = NotableEventTag(self.session_key)
-        rval = obj.get(tag_id)
-        tag = extract(rval, 'tag_name')
-        return tag
-
+                    ' basestring. Received: %s')%tag_id)
+        extension = 'event_management_interface/notable_event_tag/{}'.format(str(tag_id))
+        objects = self.request('GET', extension)
+        tag = self._extract(objects, 'tag_name')
+        
+        if tag:
+            return tag[0]
+        else:
+            return None
+        
     def delete_tag(self, tag_id):
         """
         given a tag_id, delete its value
@@ -707,9 +753,9 @@ class Event(EventBase):
         """
         if not isinstance(tag_id, basestring):
             raise TypeError(('Expecting `tag_id` to be non-empty'
-                ' basestring. Received: %s')%tag_id)
-        obj = NotableEventTag(self.session_key)
-        obj.delete(tag_id)
+                    ' basestring. Received: %s')%tag_id)
+        extension = 'event_management_interface/notable_event_tag/{}'.format(str(tag_id))
+        objects = self.request('DELETE', extension)
         return
 
     def delete_all_tags(self, event_id):
@@ -721,9 +767,9 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
-        obj = NotableEventTag(self.session_key)
-        obj.delete(event_id, is_event_id=True)
+                    ' basestring. Received: %s')%event_id)
+        extension = 'event_management_interface/notable_event_tag/{}'.format(str(event_id))
+        objects = self.request('DELETE', extension, params={'is_event_id': True})
         return
 
     def create_comment(self, event_id, comment):
@@ -741,28 +787,28 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
+                    ' basestring. Received: %s')%event_id)
         if not isinstance(comment, basestring):
             raise TypeError(('Expecting `comment` to be non-empty'
-                ' basestring. Received: %s')%comment)
-        obj = NotableEventComment(self.session_key)
+                    ' basestring. Received: %s')%comment)
         data = {
                 'event_id': event_id,
                 'comment': comment
                 }
-        r = obj.create(data)
-        if not r:
+        objects = self.request('POST', 'event_management_interface/notable_event_comment',
+                data=data)
+        if not objects:
            self.logger.error('Unable to create requested comment `%s` for event id: `%s`',
-               comment, event_id)
+                    comment, event_id)
            return None
 
         rval = {
             'event_id': event_id,
-            'comment_id': r.get('_key'),
+            'comment_id': objects.get('_key'),
             'comment': comment
             }
-        self.logger.debug('Successfully created comment: `%s` for event id: `%s`. comment id: `%s`',
-               comment, event_id, r.get('_key'))
+        self.logger.info('Successfully created comment: `%s` for event id: `%s`.\
+                comment id: `%s`', comment, event_id, objects.get('_key'))
         return rval
 
     def get_comment(self, comment_id):
@@ -776,11 +822,11 @@ class Event(EventBase):
         """
         if not isinstance(comment_id, basestring):
             raise TypeError(('Expecting `comment_id` to be non-empty'
-                ' basestring. Received: %s')%comment_id)
-        obj = NotableEventComment(self.session_key)
-        rval = obj.get(comment_id)
-        comment = extract(rval, 'comment')
-        return comment[0]
+                    ' basestring. Received: %s')%comment_id)
+        extension = 'event_management_interface/notable_event_comment/{}'.format(str(comment_id))
+        objects = self.request('GET', extension)
+        comment = self._extract(objects, 'comment')
+        return comment[0] if comment else ''
 
     def get_all_comments(self, event_id):
         """
@@ -793,10 +839,10 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
-        obj = NotableEventComment(self.session_key)
-        rval = obj.get(event_id, is_event_id=True)
-        comments = extract(rval, 'comment')
+                    ' basestring. Received: %s')%event_id)
+        extension = 'event_management_interface/notable_event_comment/{}'.format(str(event_id))
+        objects = self.request('GET', extension, params={'is_event_id': True})
+        comments = self._extract(objects, 'comment')
         return comments
 
     def delete_comment(self, comment_id):
@@ -809,9 +855,9 @@ class Event(EventBase):
         """
         if not isinstance(comment_id, basestring):
             raise TypeError(('Expecting `comment_id` to be non-empty'
-                ' basestring. Received: %s')%comment_id)
-        obj = NotableEventComment(self.session_key)
-        obj.delete(comment_id)
+                    ' basestring. Received: %s')%comment_id)
+        extension = 'event_management_interface/notable_event_comment/{}'.format(str(comment_id))
+        objects = self.request('DELETE', extension)
         return
 
     def delete_all_comments(self, event_id):
@@ -824,9 +870,9 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
-        obj = NotableEventComment(self.session_key)
-        obj.delete(event_id, is_event_id=True)
+                    ' basestring. Received: %s')%event_id)
+        extension = 'event_management_interface/notable_event_comment/{}'.format(str(event_id))
+        objects = self.request('DELETE', extension, params={'is_event_id': True})
         return
 
     def update_comment(self, event_id, comment_id, comment):
@@ -850,19 +896,18 @@ class Event(EventBase):
         """
         if not isinstance(event_id, basestring):
             raise TypeError(('Expecting `event_id` to be non-empty'
-                ' basestring. Received: %s')%event_id)
+                    ' basestring. Received: %s')%event_id)
         if not isinstance(comment_id, basestring):
             raise TypeError(('Expecting `tag_id` to be non-empty'
-                ' basestring. Received: %s')%comment_id)
-
-        obj = NotableEventComment(self.session_key)
+                    ' basestring. Received: %s')%comment_id)
         data = {
                 'event_id': event_id,
                 '_key': comment_id,
                 'comment': comment
                 }
-        rval = obj.update(comment_id, data, is_partial_update=True)
-        return rval
+        objects = self.request('PUT', 'event_management_interface/notable_event_comment',
+            data=data)
+        return objects
 
     def update_ticket_info(self, event_ids, ticket_system, ticket_id,
             ticket_url, **other_params):
@@ -884,8 +929,8 @@ class Event(EventBase):
         @param ticket_url: url to reach external ticket.
 
         @type other_params: dict
-        @param other_params: other key value pairs to locate your event. Pass nothing if you dont know these
-        values.
+        @param other_params: other key value pairs to locate your event.
+            Pass nothing if you dont know these values.
 
         @rtype dict:
         @return: dict with list of ticket ids that are successfully updated
@@ -895,30 +940,26 @@ class Event(EventBase):
         if isinstance(event_ids, basestring):
             event_ids = event_ids.split(',')
         if not isinstance(event_ids, list):
-            raise TypeError('Expecting event_ids to be a list type. Received=%s'%type(event_ids).__name__)
+            raise TypeError('Expecting event_ids to be a list type.\
+                    Received=%s'%type(event_ids).__name__)
         if not event_ids:
             raise ValueError('Expecting event_ids to have atleast 1 id. Received=%s'%event_ids)
-        rval = {
-            'success':[],
-            'failed':[]
-            }
 
-        self.logger.debug(('Event ids=%s ticket_system=%s ticket_id=%s'
-            ' ticket_url=%s other params=%s'), event_ids, ticket_system
-            ,ticket_id, ticket_url, json.dumps(other_params))
+        self.logger.info(('Event ids=%s ticket_system=%s ticket_id=%s'
+                ' ticket_url=%s other params=%s'), event_ids, ticket_system
+                ,ticket_id, ticket_url, json.dumps(other_params))
 
         for id_ in event_ids:
-            ticket = ExternalTicket(id_, self.session_key, self.logger)
-            content = ticket.upsert(ticket_system, ticket_id,
-                ticket_url, **other_params)
-            if content:
-                rval['success'].append(ticket_id)
-            else:
-                rval['failed'].append(ticket_id)
-
-        self.logger.debug('Succeeded for ids=%s Failed for ids=%s',
-                rval['success'], rval['failed'])
-        return rval
+            data = {
+                "ticket_system": ticket_system,
+                "ticket_url": ticket_url,
+                "ticket_id": ticket_id
+            }
+            data.update(other_params)
+            extension = 'event_management_interface/ticketing/{}'.format(str(id_))
+            objects = self.request('PUT', extension, data=data)
+        
+        return objects
 
     def delete_ticket_info(self, event_ids, ticket_system, ticket_id):
         """
@@ -945,51 +986,124 @@ class Event(EventBase):
             event_ids = event_ids.split(',')
         if not isinstance(event_ids, list):
             raise TypeError('Expecting event_ids to be a list type. Received={}'.format(
-                type(event_ids).__name__))
+                    type(event_ids).__name__))
         if not event_ids:
             raise ValueError('Expecting event_ids to have atleast 1 id. Received={}'.format(
-                event_ids))
-        rval = {
-                'success':[],
-                'failed':[]
-                }
-
-        self.logger.debug(('Event ids=%s ticket_system=%s ticket_id=%s'
-            ' ticket_url=%s other params=%s'), event_ids, ticket_system
-            ,ticket_id)
+                    event_ids))
+        self.logger.info(('Event ids=%s ticket_system=%s ticket_id=%s'
+                ' ticket_url=%s other params=%s'), event_ids, ticket_system
+                ,ticket_id)
 
         for id_ in event_ids:
-            ticket = ExternalTicket(id_, self.session_key, self.logger)
-            ticket.delete(ticket_system, ticket_id)
-            rval['success'].append(id_)
-        self.logger.debug('Succeeded for ids=%s Failed for ids=%s',
-                rval['success'], rval['failed'])
-        return rval
+            extension = 'event_management_interface/ticketing/{}/{}/{}'\
+                    .format(str(id_), ticket_system, str(ticket_id))
+            objects = self.request('DELETE', extension)
+
+        return objects
 
 
-class EventGroup(EventBase):
+class EventGroup(Client):
     """
     Import this class to operate on ITSI Event Group.
     """
-    def __init__(self, session_key, username=None, password=None, logger=default_logger):
-        """
-        @type session_key: string
-        @param session_key: session key given by Splunkd when you log in
-            If you dont have one, pass in None. But you will have to provide
-            credentials
+    def __init__(self, username, password, base_url, logger=default_logger, session=None,
+                 silent=False, delay=0.0):
 
+        """
         @type username: string
-        @param username: your username
+        @param username: Splunk username
 
         @type password: string
-        @param password: your password
+        @param password: splunk password
+        
+        @type base_url: string
+        @param base_url: splunkd URL
 
         @type logger: object of type logger
         @param logger: if you have an existing logger, pass it in, we'll log
-            stuff there...else check ITSI logs
+            stuff there...else check we'll use our own
+
+        @type session: <class 'requests.sessions.Session'> object
+        @param session: (optional) In case there's already a session
+        
+        @type silent: boolean
+        @param silent: (optional) When ``True`, any exception resulted
+            from HTTP status codes or parsing will be ignored.
+
+        @type delay: float
+        @param delay: (option) Ensures a minimum delay of seconds between
+            requests.
         """
-        super(EventGroup, self).__init__(session_key, username, password, logger)
-        self.group = ItsiNotableEventGroup(self.session_key)
+        super(EventGroup, self).__init__(username, password, base_url, logger, session,
+                                         silent, delay)
+
+        
+    def is_valid_drilldown(self, drilldown):
+        """
+        Validation for drilldown link
+        Must have name and the link
+        And all values must be a string
+
+        @type drilldown: dict
+        @param drilldown: drilldown to be added
+
+        @rtype: bool
+        @return: True or false according to validation.
+        """
+        if type(drilldown) is not dict:
+            return False
+
+        VALID_FIELD = ['name', 'link']
+
+        for field in VALID_FIELD:
+            if field not in drilldown:
+                return False
+            if not drilldown.get(field):
+                return False
+            if type(drilldown.get(field)) is not str:
+                return False
+
+        return True
+
+    def _clean_drilldown(self, drilldown):
+        """
+        Remove all non-whitelisted fields from drilldown dict
+
+        @type drilldown: dict
+        @param drilldown: drilldown to clean
+
+        @rtype: dict
+        @return: cleaned drilldown
+        """
+        whitelisted_fields = [
+            'name',
+            'link'
+        ]
+
+        for key in drilldown.keys():
+            if key not in whitelisted_fields:
+                del drilldown[key]
+
+        return drilldown
+
+    def _find_drilldown(self, drilldown_list, drilldown):
+        """
+        Find drilldown in drilldown list by name
+
+        @type drilldown_list: list
+        @param drilldown_list: list of drilldowns
+
+        @type drilldown: dict
+        @param drilldown: drilldown to find
+
+        @rtype: int
+        @return: index of found drilldown in drilldown list
+        """
+        for index, dd in enumerate(drilldown_list):
+            if dd['name'] == drilldown['name']:
+                return index
+
+        return None
 
     def add_drilldown(self, group_id, drilldown):
         """
@@ -1004,7 +1118,25 @@ class EventGroup(EventBase):
                             'link': "http://drill.down"
                         }
         """
-        return self.group.add_drilldown(group_id, drilldown)
+        if not self.is_valid_drilldown(drilldown):
+                raise ValueError('Drilldown data must have link and name')
+        clean_drilldown = self._clean_drilldown(drilldown)
+        try:
+            drilldown_list = self.get(group_id).get('drilldown', [])
+        except AttributeError:
+            raise TypeError('Group is not of type dict')
+        try:
+            drilldown_list.append(clean_drilldown)
+        except AttributeError:
+            raise TypeError('Drilldown field is not of type list')
+        data = {'drilldown': drilldown_list,
+                'event_id': group_id,
+                '_key': group_id
+        }
+        extension = 'event_management_interface/notable_event_group'
+        objects = self.request('PUT', extension, data=data)
+        
+        return objects
 
     def update_drilldown(self, group_id, drilldown):
         """
@@ -1016,7 +1148,40 @@ class EventGroup(EventBase):
         @type drilldown: dict
         @param drilldown: drilldown to be updated
         """
-        return self.group.update_drilldown(group_id, drilldown)
+        if not self.is_valid_drilldown(drilldown):
+            raise ValueError('Drilldown data must have link and name')
+        group = self.get(group_id)
+        if not group:
+            raise ValueError('Group does not exist')
+        clean_drilldown = self._clean_drilldown(drilldown)
+        try:
+            drilldown_list = group.get('drilldown', [])
+        except AttributeError:
+            raise TypeError('Group is not of type dict')
+        drilldown_index = self._find_drilldown(drilldown_list, clean_drilldown)
+        if not drilldown_list or drilldown_index is None:
+            response = self.add_drilldown(group_id, drilldown)
+            return response
+        try:
+            drilldown_list[drilldown_index].update(clean_drilldown)
+        except IndexError:
+            raise IndexError('Drilldown index of: {0} out of bounds\
+                    drilldown list'.format(drilldown_index))
+        except ValueError:
+            raise ValueError('Nondictionary type given for drilldown')
+        except TypeError:
+            raise TypeError('Drilldown index given is not an integer')
+        except AttributeError:
+            raise AttributeError('Drilldown list item at index: {0}\
+                    is not of type dict'.format(drilldown_index))
+        data = {'drilldown': drilldown_list,
+                'event_id': group_id,
+                '_key': group_id
+        }
+        extension = 'event_management_interface/notable_event_group'
+        objects = self.request('PUT', extension, data=data)
+
+        return objects
 
     def delete_drilldown(self, group_id, drilldown):
         """
@@ -1028,7 +1193,38 @@ class EventGroup(EventBase):
         @type drilldown: dict
         @param drilldown: drilldown to be deleted
         """
-        return self.group.delete_drilldown(group_id, drilldown)
+
+        if not self.is_valid_drilldown(drilldown):
+            raise ValueError('Drilldown data must have link and name')
+        group = self.get(group_id)
+        if not group:
+            raise ValueError('Group does not exist')
+        clean_drilldown = self._clean_drilldown(drilldown)
+        try:
+            drilldown_list = group.get('drilldown', [])
+        except AttributeError:
+            raise TypeError('Group is not of type dict')
+        drilldown_index = self._find_drilldown(drilldown_list, clean_drilldown)
+        if drilldown_index is None:
+            raise KeyError('Drilldown with name: {0} not found'.format(drilldown['name']))
+        try:
+            drilldown_list.pop(drilldown_index)
+        except AttributeError:
+            raise AttributeError('Drilldown list is not of type list')
+        except TypeError:
+            raise TypeError('Drilldown index given is not an integer')
+        except IndexError:
+            raise IndexError('Drilldown index of: {0} out of bounds for\
+                    drilldown list'.format(drilldown_index))
+
+        data = {'drilldown': drilldown_list,
+                'event_id': group_id,
+                '_key': group_id
+        }
+        extension = 'event_management_interface/notable_event_group'
+        objects = self.request('PUT', extension, data=data)
+
+        return objects
 
     def get(self, group_id):
         """
@@ -1036,4 +1232,6 @@ class EventGroup(EventBase):
         @type group_id: string
         @param group_id: id of the group where add_drilldown to be operated on
         """
-        return self.group.get(group_id)
+        extension = 'event_management_interface/notable_event_group/{}'.format(str(group_id))
+        objects = self.request('GET', extension)
+        return objects

@@ -10,6 +10,10 @@ import csv
 import json
 import gzip
 
+from eventing_base import setup_logger
+
+default_logger = setup_logger()
+
 class CustomEventActionBase(object):
     """
     In your script, inherit your class from this class.
@@ -25,9 +29,8 @@ class CustomEventActionBase(object):
         >>>         config = self.get_config()
         >>>         event_data = self.get_event()
         >>>         # implement your logic here...not implemented in baseclass.
-        >>>         # see itsi_sample_event_action_ping.py for an example.
     """
-    def __init__(self, settings, logger):
+    def __init__(self, settings, logger=default_logger):
         """
         Initialize with incoming parameters which were passed to your script
         via stdin.
@@ -54,16 +57,16 @@ class CustomEventActionBase(object):
         """
         return self.settings.get('configuration')
 
-    def get_session_key(self):
+    def get_session(self):
         """
         return the splunk session key
         @rtype: basestring
         @return: splunkd session key / auth token
         """
-        if 'session_key' not in self.settings:
-            self.logger.error('No session key found in settings=`%s`',self.settings)
-            raise KeyError('No session key found in settings')
-        return self.settings['session_key']
+        if 'session' not in self.settings:
+            self.logger.error('No session found in settings=`%s`',self.settings)
+            raise KeyError('No session found in settings')
+        return self.settings['session']
 
     def get_results_file(self):
         """
