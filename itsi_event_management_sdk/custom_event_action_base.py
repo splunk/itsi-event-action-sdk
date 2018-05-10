@@ -1,4 +1,4 @@
-# ${copyright}
+# Copyright (C) 2005-2018 Splunk Inc. All Rights Reserved
 
 """
 Import this module when you'd like to consume output of your modalert
