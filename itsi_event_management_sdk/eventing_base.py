@@ -1,4 +1,4 @@
-# $ {copyright}
+# Copyright (C) 2005-2018 Splunk Inc. All Rights Reserved
 """
 SDK's Client class.
 Define Base Classes applicable for all Event Management here.
