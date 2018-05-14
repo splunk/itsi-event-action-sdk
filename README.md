@@ -19,4 +19,4 @@ python itsi_event_management_sdk/tests/tests.py
 
 ## Docs
 
-<https://docs.splunk.com/Documentation/ITSI/3.0.1/User/UsetheNotableEventActionSDK>
+<http://docs.splunk.com/Documentation/EventActionsSDK/1.0/SDKref/UsetheITSIEventManagementSDK>
