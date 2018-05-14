@@ -1,4 +1,4 @@
-# ITSI Event Management SDK
+# ITSI Event Management SDK v1.0
 
 ## Installation
 
