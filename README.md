@@ -1,5 +1,7 @@
 # ITSI Event Management SDK v1.0
 
+The ITSI Event Management SDK is deprecated and no longer supported. If you have scripts based on this SDK, you can continue using them, but it is recommended to eventually port them to use the original Notable Event Actions SDK that is shipped with ITSI, as it will be updated going forward. For documentation, see [Use the Notable Event Actions SDK](https://docs.splunk.com/Documentation/ITSI/4.3.0/Configure/UsetheNotableEventActionSDK).
+
 ## Installation
 
 Install with `pip`:
