@@ -20,7 +20,7 @@ setup(
     description="ITSI event managment SDK",
     packages=find_packages(),
     install_requires=[
-        "requests==2.18.4",
+        "requests==2.20.0",
     ],
     test_suite="tests",
     tests_require=test_requirements,
